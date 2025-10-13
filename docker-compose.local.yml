@@ -1,0 +1,12 @@
+services:
+  douyin_tiktok_api_local:
+    image: evil0ctal/douyin_tiktok_download_api:latest
+    container_name: douyin_tiktok_api_local
+    ports:
+      - 8081:80
+    volumes:
+      - ./Douyin_TikTok_Download_API/crawlers/douyin/web/config.yaml:/app/crawlers/douyin/web/config.yaml:ro
+      - ./Douyin_TikTok_Download_API/config.yaml:/app/config.yaml:ro
+      - ./download:/app/download
+      - ./logs:/app/logs
+    restart: unless-stopped

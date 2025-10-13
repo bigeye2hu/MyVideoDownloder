@@ -1,0 +1,4 @@
+2025-09-16 13:00:39,592 - Douyin_TikTok_Download_API_Crawlers - ERROR - 请求Douyin msToken API时发生错误：[Errno 111] Connection refused
+2025-09-16 13:00:39,593 - Douyin_TikTok_Download_API_Crawlers - INFO - 将使用本地生成的虚假msToken参数，以继续请求。
+2025-09-16 13:00:39,627 - Douyin_TikTok_Download_API_Crawlers - ERROR - 请求Douyin msToken API时发生错误：[Errno 111] Connection refused
+2025-09-16 13:00:39,628 - Douyin_TikTok_Download_API_Crawlers - INFO - 将使用本地生成的虚假msToken参数，以继续请求。

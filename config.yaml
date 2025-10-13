@@ -33,6 +33,9 @@ API:
   Version: V4.1.2    # API version | API版本
   Update_Time: 2025/03/16    # API update time | API更新时间
   Environment: Demo    # API environment | API环境
+  
+  # API Authentication
+  API_Key: "d8f7e6d5c4b3a210fedcba9876543210"  # API key for authentication | 用于身份验证的API密钥
 
   # Download Configuration
   Download_Switch: true    # Enable download function | 启用下载功能

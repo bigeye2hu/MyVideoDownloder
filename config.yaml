@@ -25,7 +25,7 @@ Web:
 API:
   # Network Configuration
   Host_IP: 0.0.0.0    # default IP | 默认IP
-  Host_Port: 8080    # default port is 80 | 默认端口为80
+  Host_Port: 80    # default port is 80 | 默认端口为80
   Docs_URL: /docs    # API documentation URL | API文档URL
   Redoc_URL: /redoc    # API documentation URL | API文档URL
 
@@ -35,7 +35,7 @@ API:
   Environment: Demo    # API environment | API环境
   
   # API Authentication
-    API_Key: "15UHOdNA1nO0wzCjLY3PzU3dLAWLBMZc3ieJih+qbObgoVOWPiatKzmaMw=="  # API key for authentication | 用于身份验证的API密钥
+  API_Key: "15UHOdNA1nO0wzCjLY3PzU3dLAWLBMZc3ieJih+qbObgoVOWPiatKzmaMw=="  # API key for authentication | 用于身份验证的API密钥
 
   # Download Configuration
   Download_Switch: true    # Enable download function | 启用下载功能

@@ -1,0 +1,140 @@
+# 高尔夫视频下载 API - 部署指导
+# 目标域名: download.mygolfai.com.cn
+
+## 步骤 1: 创建 CloudFlare Tunnel
+
+1. 打开浏览器，访问：https://one.dash.cloudflare.com/
+2. 登录你的 CloudFlare 账号
+3. 左侧菜单找到：Networks → Tunnels
+4. 点击右上角：Create a tunnel
+5. 选择：Cloudflared
+6. 输入 Tunnel 名称：golf-download-api
+7. 点击：Save tunnel
+8. 会显示一个很长的 Token（以 eyJ 开头）
+9. **复制这个 Token**（先不要关闭页面，后面还要回来）
+
+Token 示例：
+eyJhIjoiMTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6...（很长）
+
+---
+
+## 步骤 2: 配置环境变量
+
+现在在 Windows 中操作：
+
+1. 打开文件资源管理器
+2. 地址栏输入：\\wsl.localhost\Ubuntu-22.04\home\huxiaoran\projects\MyVideoDownloader\MyVideoDownloder
+3. 在这个文件夹中，右键 → 新建 → 文本文档
+4. 命名为：.env（注意：没有 .txt 后缀）
+5. 用记事本打开 .env 文件
+6. 粘贴以下内容：
+
+TUNNEL_TOKEN=你刚才复制的Token
+TZ=Asia/Shanghai
+
+7. 保存并关闭
+
+---
+
+## 步骤 3: 启动服务
+
+1. 在 MyVideoDownloder 文件夹中
+2. 找到文件：Windows启动.bat
+3. 双击运行它
+4. 会出现黑色命令行窗口，显示部署过程
+5. 等待看到"部署完成！"的提示
+6. 看到显示"API 服务运行正常"和"CloudFlare Tunnel 已连接"
+
+如果一切正常，会显示：
+✓ 配置文件检查通过
+✓ Docker 已安装
+✓ Docker Compose 已安装
+✓ 目录结构已创建
+✓ API 服务运行正常
+✓ CloudFlare Tunnel 已连接
+
+---
+
+## 步骤 4: 配置域名（重要！）
+
+回到刚才的 CloudFlare 页面：
+
+1. 在你创建的 Tunnel 页面中
+2. 找到 "Public Hostname" 部分
+3. 点击：Add a public hostname
+
+4. 填写配置：
+   - Subdomain: download
+   - Domain: mygolfai.com.cn（从下拉列表选择）
+   - Path: 留空
+   - Service:
+     * Type: HTTP
+     * URL: golf_video_api:80
+   
+5. 点击：Save hostname
+
+最终配置结果：
+https://download.mygolfai.com.cn → http://golf_video_api:80
+
+---
+
+## 步骤 5: 验证部署
+
+### 5.1 测试本地访问
+
+1. 打开浏览器
+2. 访问：http://localhost:8081/docs
+3. 应该看到 API 文档页面
+
+### 5.2 测试公网访问
+
+1. 访问：https://download.mygolfai.com.cn/docs
+2. 应该看到同样的 API 文档页面
+3. 如果能看到，说明部署成功！
+
+### 5.3 运行测试脚本
+
+1. 双击运行：Windows测试服务.bat
+2. 检查所有测试是否通过
+
+---
+
+## 步骤 6: 在高尔夫 App 中配置
+
+在你的 App 代码中使用：
+
+Base URL: https://download.mygolfai.com.cn
+
+API 端点：
+- 视频解析: POST /api/hybrid/video_data
+- 直接下载: GET /api/download
+
+---
+
+## 测试 API 调用
+
+在命令行测试（或使用 Postman）：
+
+curl -X POST "https://download.mygolfai.com.cn/api/hybrid/video_data" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://v.douyin.com/iJsyErwJ/"}'
+
+应该返回 JSON 格式的视频信息。
+
+---
+
+## 常见问题
+
+Q: Token 填写后还是报错？
+A: 确保 Token 没有多余的空格或换行符
+
+Q: 本地能访问但公网无法访问？
+A: 检查 CloudFlare 配置，Service URL 必须是 golf_video_api:80
+
+Q: mygolfai.com.cn 不在域名列表中？
+A: 需要先在 CloudFlare 添加这个域名
+
+---
+
+完成以上步骤后，你的 App 就可以通过 download.mygolfai.com.cn 访问视频下载服务了！
+

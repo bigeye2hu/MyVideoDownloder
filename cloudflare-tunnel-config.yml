@@ -1,0 +1,15 @@
+# Cloudflare Tunnel 閰嶇疆鏂囦欢
+# 浣跨敤鏂规硶锛歝loudflared tunnel --config cloudflare-tunnel-config.yml run
+
+tunnel: YOUR_TUNNEL_ID
+credentials-file: /path/to/.cloudflared/YOUR_TUNNEL_ID.json
+
+ingress:
+  # 瑙嗛涓嬭浇API鏈嶅姟
+  - hostname: video-api.yourdomain.com
+    service: http://localhost:8081
+    originRequest:
+      connectTimeout: 30s
+      noTLSVerify: false
+  
+  # 鎹曡幏鎵€鏈夊叾浠栬姹?  - service: http_status:404

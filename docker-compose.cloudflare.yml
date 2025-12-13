@@ -1,0 +1,47 @@
+version: '3.9'
+
+services:
+  # 视频下载 API 服务
+  video_downloader_api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: golf_video_downloader_api
+    ports:
+      - '8081:80'
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./crawlers:/app/crawlers:ro
+      - ./download:/app/download
+      - ./logs:/app/logs
+    restart: always
+    environment:
+      TZ: Asia/Shanghai
+      PYTHONUNBUFFERED: 1
+    networks:
+      - golf_video_net
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:80/docs']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # CloudFlare Tunnel 服务
+  cloudflare_tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: golf_cloudflare_tunnel
+    restart: always
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    networks:
+      - golf_video_net
+    depends_on:
+      video_downloader_api:
+        condition: service_healthy
+
+networks:
+  golf_video_net:
+    driver: bridge
+

@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  douyin_tiktok_api:
+    image: evil0ctal/douyin_tiktok_download_api:latest
+    container_name: douyin_tiktok_api
+    ports:
+      - "8080:80"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./download:/app/download
+      - ./logs:/app/logs
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      PUID: 1026
+      PGID: 100

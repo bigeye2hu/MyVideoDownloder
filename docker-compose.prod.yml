@@ -1,0 +1,31 @@
+version: '3.9'
+
+services:
+  douyin_tiktok_api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: my_video_downloader_api
+    ports:
+      - '8081:80'
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./crawlers:/app/crawlers:ro
+      - ./download:/app/download
+      - ./logs:/app/logs
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      PYTHONUNBUFFERED: 1
+    networks:
+      - video_downloader_net
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:80/docs']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  video_downloader_net:
+    driver: bridge

@@ -28,10 +28,17 @@ def init_database():
         CREATE TABLE IF NOT EXISTS users (
             lc_uid TEXT PRIMARY KEY,
             credits_balance INTEGER NOT NULL DEFAULT 0,
+            credits_frozen INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
         """)
+        
+        # 添加credits_frozen列（如果不存在）
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN credits_frozen INTEGER NOT NULL DEFAULT 0")
+        except:
+            pass  # 列已存在
         
         # 2. 积分流水表（强烈要求）
         cursor.execute("""
@@ -71,6 +78,8 @@ def init_database():
         """)
         
         # 4. 下载任务表
+        # status: running(解析中) / succeeded(解析成功) / failed(解析失败)
+        # confirmed: 0(未确认) / 1(已确认下载成功) / -1(已取消/超时)
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS download_jobs (
             job_id TEXT PRIMARY KEY,
@@ -79,6 +88,7 @@ def init_database():
             platform TEXT NOT NULL,
             cost_credits INTEGER NOT NULL,
             status TEXT NOT NULL,
+            confirmed INTEGER NOT NULL DEFAULT 0,
             result_data TEXT,
             error_message TEXT,
             created_at TEXT NOT NULL,
@@ -86,6 +96,12 @@ def init_database():
             FOREIGN KEY (lc_uid) REFERENCES users(lc_uid)
         )
         """)
+        
+        # 添加confirmed列（如果不存在）
+        try:
+            cursor.execute("ALTER TABLE download_jobs ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0")
+        except:
+            pass  # 列已存在
         
         # 为下载任务表创建索引
         cursor.execute("""

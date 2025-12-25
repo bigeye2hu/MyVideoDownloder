@@ -37,10 +37,24 @@ class DownloadStatusResponse(BaseModel):
     platform: str
     cost_credits: int
     status: str
+    confirmed: int = 0  # 0=未确认, 1=已确认, -1=已取消
     result_data: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     created_at: str
     updated_at: str
+
+
+class ConfirmRequest(BaseModel):
+    """确认请求"""
+    job_id: str
+
+
+class ConfirmResponse(BaseModel):
+    """确认响应"""
+    success: bool
+    message: str
+    credits_deducted: Optional[int] = None
+    credits_refunded: Optional[int] = None
 
 
 @router.post("/start", response_model=DownloadStartResponse, summary="发起下载任务")
@@ -71,15 +85,15 @@ async def start_download(
     if not valid:
         raise HTTPException(status_code=401, detail=f"身份验证失败: {error}")
     
-    # 检查余额
-    balance = CreditService.get_balance(x_lc_uid)
+    # 检查可用余额（总余额 - 已冻结）
+    available = CreditService.get_available_balance(x_lc_uid)
     platform = DownloadService.detect_platform(request.url)
     cost = DownloadService.get_cost_for_platform(platform)
     
-    if balance < cost:
+    if available < cost:
         raise HTTPException(
             status_code=402,
-            detail=f"积分不足。当前余额: {balance}, 需要: {cost}"
+            detail=f"积分不足。可用余额: {available}, 需要: {cost}"
         )
     
     # 创建任务并预扣积分
@@ -96,7 +110,7 @@ async def start_download(
         platform=platform,
         cost_credits=cost,
         status="running",
-        message="下载任务已创建，请通过job_id查询状态"
+        message="下载任务已创建，积分已冻结。解析成功后请调用confirm接口确认"
     )
 
 
@@ -131,6 +145,68 @@ async def get_download_status(
         raise HTTPException(status_code=403, detail="无权访问此任务")
     
     return DownloadStatusResponse(**job)
+
+
+@router.post("/confirm", response_model=ConfirmResponse, summary="确认下载成功")
+async def confirm_download(
+    request: ConfirmRequest,
+    x_lc_uid: str = HeaderParam(alias="X-LC-UID"),
+    x_lc_session: str = HeaderParam(alias="X-LC-Session", default="")
+):
+    """
+    确认下载成功（客户端调用）
+    
+    **调用时机**：客户端在文件下载并保存到相册成功后调用
+    
+    **效果**：将冻结的积分真正扣除
+    
+    **注意**：
+    - 只有状态为 succeeded 的任务才能确认
+    - 每个任务只能确认一次
+    """
+    # 验证身份
+    valid, error = await AuthService.verify_session(x_lc_uid, x_lc_session)
+    if not valid:
+        raise HTTPException(status_code=401, detail=f"身份验证失败: {error}")
+    
+    result = DownloadService.confirm_download(request.job_id, x_lc_uid)
+    
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result["message"])
+    
+    return ConfirmResponse(**result)
+
+
+@router.post("/cancel", response_model=ConfirmResponse, summary="取消下载")
+async def cancel_download(
+    request: ConfirmRequest,
+    x_lc_uid: str = HeaderParam(alias="X-LC-UID"),
+    x_lc_session: str = HeaderParam(alias="X-LC-Session", default="")
+):
+    """
+    取消下载（客户端调用）
+    
+    **调用时机**：
+    - 客户端下载文件失败时
+    - 用户主动取消下载时
+    
+    **效果**：解冻积分，返还到可用余额
+    
+    **注意**：
+    - 已确认的任务无法取消
+    - 每个任务只能取消一次
+    """
+    # 验证身份
+    valid, error = await AuthService.verify_session(x_lc_uid, x_lc_session)
+    if not valid:
+        raise HTTPException(status_code=401, detail=f"身份验证失败: {error}")
+    
+    result = DownloadService.cancel_download(request.job_id, x_lc_uid)
+    
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result["message"])
+    
+    return ConfirmResponse(**result)
 
 
 async def execute_download(job_id: str, url: str, platform: str):

@@ -62,7 +62,13 @@ class DownloadService:
     @staticmethod
     def create_download_job(lc_uid: str, url: str) -> Optional[Dict[str, Any]]:
         """
-        创建下载任务并预扣积分
+        创建下载任务并冻结积分（延迟扣分模式）
+        
+        积分流程：
+        1. 创建任务时：冻结积分（预占，不真正扣除）
+        2. 解析成功后：等待客户端确认
+        3. 客户端确认下载成功：真正扣除积分
+        4. 客户端取消或超时：解冻积分（返还）
         
         Args:
             lc_uid: LeanCloud用户ID
@@ -75,11 +81,10 @@ class DownloadService:
         platform = DownloadService.detect_platform(url)
         cost = DownloadService.get_cost_for_platform(platform)
         
-        # 预扣积分
-        success = CreditService.deduct_credits(
+        # 冻结积分（预占，不真正扣除）
+        success = CreditService.freeze_credits(
             lc_uid=lc_uid,
             amount=cost,
-            reason=f"download_{platform}",
             ref_id=job_id
         )
         
@@ -95,13 +100,13 @@ class DownloadService:
             try:
                 cursor.execute("""
                 INSERT INTO download_jobs 
-                (job_id, lc_uid, url, platform, cost_credits, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (job_id, lc_uid, url, platform, cost, "running", now, now))
+                (job_id, lc_uid, url, platform, cost_credits, status, confirmed, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (job_id, lc_uid, url, platform, cost, "running", 0, now, now))
                 
                 conn.commit()
                 
-                logger.info(f"下载任务创建成功: {job_id}, 用户: {lc_uid}, 平台: {platform}, 扣分: {cost}")
+                logger.info(f"下载任务创建成功: {job_id}, 用户: {lc_uid}, 平台: {platform}, 冻结积分: {cost}")
                 
                 return {
                     "job_id": job_id,
@@ -110,16 +115,16 @@ class DownloadService:
                     "platform": platform,
                     "cost_credits": cost,
                     "status": "running",
+                    "confirmed": 0,
                     "created_at": now
                 }
                 
             except Exception as e:
                 conn.rollback()
-                # 回滚积分扣除
-                CreditService.refund_credits(
+                # 回滚积分冻结
+                CreditService.unfreeze_credits(
                     lc_uid=lc_uid,
                     amount=cost,
-                    reason=f"download_create_failed",
                     ref_id=job_id
                 )
                 logger.error(f"下载任务创建失败: {e}")
@@ -129,7 +134,11 @@ class DownloadService:
     def update_job_status(job_id: str, status: str, result_data: Optional[Dict] = None, 
                          error_message: Optional[str] = None):
         """
-        更新任务状态
+        更新任务状态（延迟扣分模式）
+        
+        注意：
+        - 解析失败(failed)时：解冻积分（返还）
+        - 解析成功(succeeded)时：不扣积分，等待客户端确认
         
         Args:
             job_id: 任务ID
@@ -144,7 +153,7 @@ class DownloadService:
             try:
                 # 获取任务信息
                 cursor.execute("""
-                SELECT lc_uid, cost_credits, status FROM download_jobs 
+                SELECT lc_uid, cost_credits, status, confirmed FROM download_jobs 
                 WHERE job_id = ?
                 """, (job_id,))
                 
@@ -156,16 +165,16 @@ class DownloadService:
                 lc_uid = row["lc_uid"]
                 cost_credits = row["cost_credits"]
                 old_status = row["status"]
+                confirmed = row["confirmed"]
                 
-                # 如果任务失败，需要返还积分
-                if status == "failed" and old_status == "running":
-                    CreditService.refund_credits(
+                # 如果解析失败，解冻积分
+                if status == "failed" and old_status == "running" and confirmed == 0:
+                    CreditService.unfreeze_credits(
                         lc_uid=lc_uid,
                         amount=cost_credits,
-                        reason="download_failed",
                         ref_id=job_id
                     )
-                    logger.info(f"下载失败，积分已返还: {job_id}")
+                    logger.info(f"解析失败，积分已解冻: {job_id}")
                 
                 # 更新任务状态
                 result_json = json.dumps(result_data, ensure_ascii=False) if result_data else None
@@ -217,4 +226,135 @@ class DownloadService:
                     pass
             
             return job
+    
+    @staticmethod
+    def confirm_download(job_id: str, lc_uid: str) -> Dict[str, Any]:
+        """
+        确认下载成功（客户端调用）
+        
+        客户端在文件下载并保存成功后调用此方法，真正扣除积分
+        
+        Args:
+            job_id: 任务ID
+            lc_uid: 用户ID（用于验证权限）
+            
+        Returns:
+            {"success": bool, "message": str}
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            now = datetime.utcnow().isoformat()
+            
+            try:
+                # 获取任务信息
+                cursor.execute("""
+                SELECT lc_uid, cost_credits, status, confirmed FROM download_jobs 
+                WHERE job_id = ?
+                """, (job_id,))
+                
+                row = cursor.fetchone()
+                if not row:
+                    return {"success": False, "message": "任务不存在"}
+                
+                if row["lc_uid"] != lc_uid:
+                    return {"success": False, "message": "无权操作此任务"}
+                
+                if row["confirmed"] != 0:
+                    return {"success": False, "message": "任务已确认或已取消"}
+                
+                if row["status"] != "succeeded":
+                    return {"success": False, "message": "任务未完成，无法确认"}
+                
+                cost_credits = row["cost_credits"]
+                
+                # 真正扣除积分（从冻结转为扣除）
+                success = CreditService.confirm_deduct(
+                    lc_uid=lc_uid,
+                    amount=cost_credits,
+                    reason="download_confirmed",
+                    ref_id=job_id
+                )
+                
+                if not success:
+                    return {"success": False, "message": "积分扣除失败"}
+                
+                # 更新任务确认状态
+                cursor.execute("""
+                UPDATE download_jobs 
+                SET confirmed = 1, updated_at = ?
+                WHERE job_id = ?
+                """, (now, job_id))
+                
+                conn.commit()
+                
+                logger.info(f"下载确认成功，积分已扣除: {job_id}, 用户: {lc_uid}, 积分: {cost_credits}")
+                
+                return {"success": True, "message": "确认成功，积分已扣除", "credits_deducted": cost_credits}
+                
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"下载确认失败: {job_id}, {e}")
+                return {"success": False, "message": f"确认失败: {str(e)}"}
+    
+    @staticmethod
+    def cancel_download(job_id: str, lc_uid: str) -> Dict[str, Any]:
+        """
+        取消下载（客户端调用）
+        
+        客户端在下载失败或用户取消时调用，解冻积分
+        
+        Args:
+            job_id: 任务ID
+            lc_uid: 用户ID（用于验证权限）
+            
+        Returns:
+            {"success": bool, "message": str}
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            now = datetime.utcnow().isoformat()
+            
+            try:
+                # 获取任务信息
+                cursor.execute("""
+                SELECT lc_uid, cost_credits, status, confirmed FROM download_jobs 
+                WHERE job_id = ?
+                """, (job_id,))
+                
+                row = cursor.fetchone()
+                if not row:
+                    return {"success": False, "message": "任务不存在"}
+                
+                if row["lc_uid"] != lc_uid:
+                    return {"success": False, "message": "无权操作此任务"}
+                
+                if row["confirmed"] != 0:
+                    return {"success": False, "message": "任务已确认或已取消"}
+                
+                cost_credits = row["cost_credits"]
+                
+                # 解冻积分
+                CreditService.unfreeze_credits(
+                    lc_uid=lc_uid,
+                    amount=cost_credits,
+                    ref_id=job_id
+                )
+                
+                # 更新任务确认状态为取消
+                cursor.execute("""
+                UPDATE download_jobs 
+                SET confirmed = -1, updated_at = ?
+                WHERE job_id = ?
+                """, (now, job_id))
+                
+                conn.commit()
+                
+                logger.info(f"下载取消，积分已解冻: {job_id}, 用户: {lc_uid}, 积分: {cost_credits}")
+                
+                return {"success": True, "message": "取消成功，积分已返还", "credits_refunded": cost_credits}
+                
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"下载取消失败: {job_id}, {e}")
+                return {"success": False, "message": f"取消失败: {str(e)}"}
 

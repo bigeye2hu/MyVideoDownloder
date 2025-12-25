@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from typing import Optional
 from app.services.credit_service import CreditService
 from app.services.auth_service import AuthService
+from app.db.database import get_or_create_user
 
 router = APIRouter()
 
@@ -14,7 +15,9 @@ router = APIRouter()
 class BalanceResponse(BaseModel):
     """余额查询响应"""
     lc_uid: str
-    credits_balance: int
+    credits_balance: int      # 总余额
+    credits_frozen: int = 0   # 冻结中的积分
+    credits_available: int    # 可用余额（总余额 - 冻结）
 
 
 class LedgerItem(BaseModel):
@@ -50,8 +53,16 @@ async def get_balance(
         raise HTTPException(status_code=401, detail=f"身份验证失败: {error}")
     
     try:
-        balance = CreditService.get_balance(x_lc_uid)
-        return BalanceResponse(lc_uid=x_lc_uid, credits_balance=balance)
+        user = get_or_create_user(x_lc_uid)
+        balance = user["credits_balance"]
+        frozen = user.get("credits_frozen", 0) or 0
+        available = balance - frozen
+        return BalanceResponse(
+            lc_uid=x_lc_uid, 
+            credits_balance=balance,
+            credits_frozen=frozen,
+            credits_available=available
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"查询余额失败: {str(e)}")
 

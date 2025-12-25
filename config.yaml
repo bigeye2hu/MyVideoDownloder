@@ -45,6 +45,14 @@ API:
   Download_File_Prefix: "douyin.wtf_"    # Default download file prefix | 默认下载文件前缀
 
 
+# LeanCloud Configuration (用于App用户身份验证)
+LeanCloud:
+  App_ID: "OAANvT46sDV2lLBLurUFXfk1-gzGzoHsz"
+  App_Key: "E5qDJG28EHdSXiWYd7G60BfI"
+  API_Server: "https://oaanvt46.lc-cn-n1-shared.com"
+  Enable_Auth: true
+
+
 # iOS Shortcut
 iOS_Shortcut:
   iOS_Shortcut_Version: 7.0

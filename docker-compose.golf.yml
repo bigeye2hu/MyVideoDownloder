@@ -1,40 +1,27 @@
-version: '3.9'
-
 services:
-  # 高尔夫视频下载 API 服务
   golf_video_api:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: golf_video_api
     ports:
-      - '18889:80'
+      - "18889:80"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
       - ./download:/app/download
       - ./logs:/app/logs
-    restart: always
+    restart: unless-stopped
     environment:
       TZ: Asia/Shanghai
-      PYTHONUNBUFFERED: 1
-      TIKHUB_API_KEY: ${TIKHUB_API_KEY}
-      TIKHUB_API_BASE: ${TIKHUB_API_BASE:-https://api.tikhub.io}
-    networks:
-      - golf_network
+      TIKHUB_API_KEY: ${TIKHUB_API_KEY:-}
 
-  # CloudFlare Tunnel 服务
-  cloudflare_tunnel:
+  golf_cloudflare_tunnel:
     image: cloudflare/cloudflared:latest
     container_name: golf_cloudflare_tunnel
-    restart: always
-    command: tunnel --no-autoupdate run
+    restart: unless-stopped
     environment:
-      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
-    networks:
-      - golf_network
+      TUNNEL_TOKEN: eyJhIjoiYjI3MWFkZDVhMTFmNzc1NDJiZTgzY2U3ZGIwMDgxYWQiLCJ0IjoiMmJiOTg4N2MtMjc1Zi00YWJkLWI3ODktZmM4MTdjMTYzMjRmIiwicyI6Ik9EWmtNREUwWW1RdE1tRTFPQzAwTUdFNUxXRTFNemd0WWpVMk1USmtNREUxWWpZNCJ9
+    command: tunnel --no-autoupdate run
     depends_on:
       - golf_video_api
-
-networks:
-  golf_network:
-    driver: bridge

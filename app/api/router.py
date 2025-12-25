@@ -6,6 +6,9 @@ from app.api.endpoints import (
     douyin_app,
     bilibili_web,
     hybrid_parsing, ios_shortcut, download,
+    credits,
+    downloads,
+    admin,
 )
 
 router = APIRouter()
@@ -29,3 +32,10 @@ router.include_router(ios_shortcut.router, prefix="/ios", tags=["iOS-Shortcut"])
 
 # Download routers
 router.include_router(download.router, tags=["Download"])
+
+# Credits & Downloads (V1 商业化积分系统)
+router.include_router(credits.router, prefix="/credits", tags=["Credits-API"])
+router.include_router(downloads.router, prefix="/downloads", tags=["Downloads-API"])
+
+# Admin (数据库管理)
+router.include_router(admin.router, prefix="/admin", tags=["Admin-API"])

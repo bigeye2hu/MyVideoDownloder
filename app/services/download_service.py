@@ -239,16 +239,16 @@ class DownloadService:
             lc_uid: 用户ID（用于验证权限）
             
         Returns:
-            {"success": bool, "message": str}
+            {"success": bool, "message": str, "video_info": dict}
         """
         with get_db_connection() as conn:
             cursor = conn.cursor()
             now = datetime.utcnow().isoformat()
             
             try:
-                # 获取任务信息
+                # 获取任务信息（包含result_data）
                 cursor.execute("""
-                SELECT lc_uid, cost_credits, status, confirmed FROM download_jobs 
+                SELECT lc_uid, cost_credits, status, confirmed, result_data FROM download_jobs 
                 WHERE job_id = ?
                 """, (job_id,))
                 
@@ -262,10 +262,19 @@ class DownloadService:
                 if row["confirmed"] != 0:
                     return {"success": False, "message": "任务已确认或已取消"}
                 
-                if row["status"] != "succeeded":
-                    return {"success": False, "message": "任务未完成，无法确认"}
+                # 支持 pending_confirm 和 succeeded 状态
+                if row["status"] not in ("pending_confirm", "succeeded"):
+                    return {"success": False, "message": f"任务状态无效({row['status']})，无法确认"}
                 
                 cost_credits = row["cost_credits"]
+                
+                # 解析视频信息
+                video_info = None
+                if row["result_data"]:
+                    try:
+                        video_info = json.loads(row["result_data"])
+                    except:
+                        pass
                 
                 # 真正扣除积分（从冻结转为扣除）
                 success = CreditService.confirm_deduct(
@@ -278,10 +287,10 @@ class DownloadService:
                 if not success:
                     return {"success": False, "message": "积分扣除失败"}
                 
-                # 更新任务确认状态
+                # 更新任务确认状态和状态为succeeded
                 cursor.execute("""
                 UPDATE download_jobs 
-                SET confirmed = 1, updated_at = ?
+                SET confirmed = 1, status = 'succeeded', updated_at = ?
                 WHERE job_id = ?
                 """, (now, job_id))
                 
@@ -289,7 +298,12 @@ class DownloadService:
                 
                 logger.info(f"下载确认成功，积分已扣除: {job_id}, 用户: {lc_uid}, 积分: {cost_credits}")
                 
-                return {"success": True, "message": "确认成功，积分已扣除", "credits_deducted": cost_credits}
+                return {
+                    "success": True, 
+                    "message": "确认成功，积分已扣除", 
+                    "credits_deducted": cost_credits,
+                    "video_info": video_info  # 返回视频信息（含下载链接）
+                }
                 
             except Exception as e:
                 conn.rollback()

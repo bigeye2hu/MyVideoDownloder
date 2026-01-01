@@ -2,11 +2,13 @@
 """
 积分管理API端点
 """
+import time
 from fastapi import APIRouter, HTTPException, Header as HeaderParam
 from pydantic import BaseModel
 from typing import Optional
 from app.services.credit_service import CreditService
 from app.services.auth_service import AuthService
+from app.services.metrics_service import MetricsService
 from app.db.database import get_or_create_user
 
 router = APIRouter()
@@ -47,12 +49,18 @@ async def get_balance(
     - **认证**: 通过Header的X-LC-UID和X-LC-Session验证用户身份
     - **新用户**: 首次查询会自动创建账户并赠送100积分
     """
-    # 验证身份
-    valid, error = await AuthService.verify_session(x_lc_uid, x_lc_session)
-    if not valid:
-        raise HTTPException(status_code=401, detail=f"身份验证失败: {error}")
+    start_time = time.time()
+    status_code = 200
+    error_msg = None
     
     try:
+        # 验证身份
+        valid, error = await AuthService.verify_session(x_lc_uid, x_lc_session)
+        if not valid:
+            status_code = 401
+            error_msg = f"身份验证失败: {error}"
+            raise HTTPException(status_code=401, detail=error_msg)
+        
         user = get_or_create_user(x_lc_uid)
         balance = user["credits_balance"]
         frozen = user.get("credits_frozen", 0) or 0
@@ -63,8 +71,22 @@ async def get_balance(
             credits_frozen=frozen,
             credits_available=available
         )
+    except HTTPException:
+        raise
     except Exception as e:
+        status_code = 500
+        error_msg = str(e)
         raise HTTPException(status_code=500, detail=f"查询余额失败: {str(e)}")
+    finally:
+        latency_ms = int((time.time() - start_time) * 1000)
+        MetricsService.record_api_call(
+            endpoint="/api/credits/balance",
+            method="GET",
+            status_code=status_code,
+            latency_ms=latency_ms,
+            lc_uid=x_lc_uid,
+            error_message=error_msg
+        )
 
 
 @router.get("/ledger", response_model=LedgerResponse, summary="查询积分流水")
@@ -79,17 +101,37 @@ async def get_ledger(
     - **认证**: 通过Header的X-LC-UID和X-LC-Session验证用户身份
     - **limit**: 返回记录数，默认50条
     """
-    # 验证身份
-    valid, error = await AuthService.verify_session(x_lc_uid, x_lc_session)
-    if not valid:
-        raise HTTPException(status_code=401, detail=f"身份验证失败: {error}")
+    start_time = time.time()
+    status_code = 200
+    error_msg = None
     
     try:
+        # 验证身份
+        valid, error = await AuthService.verify_session(x_lc_uid, x_lc_session)
+        if not valid:
+            status_code = 401
+            error_msg = f"身份验证失败: {error}"
+            raise HTTPException(status_code=401, detail=error_msg)
+        
         items = CreditService.get_ledger(x_lc_uid, limit)
         return LedgerResponse(
             lc_uid=x_lc_uid,
             items=[LedgerItem(**item) for item in items]
         )
+    except HTTPException:
+        raise
     except Exception as e:
+        status_code = 500
+        error_msg = str(e)
         raise HTTPException(status_code=500, detail=f"查询流水失败: {str(e)}")
+    finally:
+        latency_ms = int((time.time() - start_time) * 1000)
+        MetricsService.record_api_call(
+            endpoint="/api/credits/ledger",
+            method="GET",
+            status_code=status_code,
+            latency_ms=latency_ms,
+            lc_uid=x_lc_uid,
+            error_message=error_msg
+        )
 

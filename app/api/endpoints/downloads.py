@@ -2,14 +2,15 @@
 """
 下载管理API端点
 """
-import asyncio
 import httpx
+import time
 from fastapi import APIRouter, HTTPException, Header as HeaderParam
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 from app.services.download_service import DownloadService
 from app.services.credit_service import CreditService
 from app.services.auth_service import AuthService
+from app.services.metrics_service import MetricsService
 import os
 
 router = APIRouter()
@@ -27,6 +28,7 @@ class DownloadStartResponse(BaseModel):
     cost_credits: int
     status: str
     message: str
+    video_info: Optional[Dict[str, Any]] = None  # 视频元信息（标题、封面、下载链接等）
 
 
 class DownloadStatusResponse(BaseModel):
@@ -55,6 +57,7 @@ class ConfirmResponse(BaseModel):
     message: str
     credits_deducted: Optional[int] = None
     credits_refunded: Optional[int] = None
+    video_info: Optional[Dict[str, Any]] = None  # 确认后返回完整视频信息（含下载链接）
 
 
 @router.post("/start", response_model=DownloadStartResponse, summary="发起下载任务")
@@ -64,54 +67,101 @@ async def start_download(
     x_lc_session: str = HeaderParam(alias="X-LC-Session", default="")
 ):
     """
-    发起视频下载任务
+    发起视频下载任务（同步获取视频信息）
     
-    服务器会自动完成：
+    **流程**：
     1. 验证用户身份
-    2. 判断平台类型
-    3. 计算所需积分
-    4. 校验余额是否足够
-    5. 预扣（冻结）积分
-    6. 异步执行下载任务
+    2. 校验积分余额
+    3. 冻结积分
+    4. **同步调用第三方API获取视频信息**
+    5. 返回视频元信息给App展示
+    
+    **后续操作**：
+    - 用户确认 → 调用 `/api/downloads/confirm` → 积分扣除
+    - 用户取消 → 调用 `/api/downloads/cancel` → 积分解冻
     
     **扣分规则**：
     - 抖音: 10分
     - 其他平台: 20分
-    
-    **注意**：下载成功才最终扣分，失败会自动返还
     """
-    # 验证身份
-    valid, error = await AuthService.verify_session(x_lc_uid, x_lc_session)
-    if not valid:
-        raise HTTPException(status_code=401, detail=f"身份验证失败: {error}")
+    start_time = time.time()
+    status_code = 200
+    error_msg = None
     
-    # 检查可用余额（总余额 - 已冻结）
-    available = CreditService.get_available_balance(x_lc_uid)
-    platform = DownloadService.detect_platform(request.url)
-    cost = DownloadService.get_cost_for_platform(platform)
-    
-    if available < cost:
-        raise HTTPException(
-            status_code=402,
-            detail=f"积分不足。可用余额: {available}, 需要: {cost}"
+    try:
+        # 验证身份
+        valid, error = await AuthService.verify_session(x_lc_uid, x_lc_session)
+        if not valid:
+            status_code = 401
+            error_msg = f"身份验证失败: {error}"
+            raise HTTPException(status_code=401, detail=error_msg)
+        
+        # 检查可用余额（总余额 - 已冻结）
+        available = CreditService.get_available_balance(x_lc_uid)
+        platform = DownloadService.detect_platform(request.url)
+        cost = DownloadService.get_cost_for_platform(platform)
+        
+        if available < cost:
+            status_code = 402
+            error_msg = f"积分不足。可用余额: {available}, 需要: {cost}"
+            raise HTTPException(status_code=402, detail=error_msg)
+        
+        # 创建任务并预扣积分
+        job = DownloadService.create_download_job(x_lc_uid, request.url)
+        
+        if not job:
+            status_code = 500
+            error_msg = "创建下载任务失败"
+            raise HTTPException(status_code=500, detail=error_msg)
+        
+        # 同步调用第三方API获取视频信息（只调用1次）
+        video_info = None
+        try:
+            if platform == "douyin":
+                video_info = await call_douyin_api(request.url)
+                # 保存视频信息到任务
+                DownloadService.update_job_status(
+                    job_id=job["job_id"],
+                    status="pending_confirm",  # 等待用户确认
+                    result_data=video_info
+                )
+            else:
+                raise Exception(f"暂不支持平台: {platform}")
+        except Exception as e:
+            # 解析失败，解冻积分
+            DownloadService.update_job_status(
+                job_id=job["job_id"],
+                status="failed",
+                error_message=str(e)
+            )
+            status_code = 500
+            error_msg = f"视频解析失败: {str(e)}"
+            raise HTTPException(status_code=500, detail=error_msg)
+        
+        return DownloadStartResponse(
+            job_id=job["job_id"],
+            platform=platform,
+            cost_credits=cost,
+            status="pending_confirm",
+            message="视频解析成功，积分已冻结。请展示视频信息供用户确认，确认后调用confirm接口",
+            video_info=video_info
         )
-    
-    # 创建任务并预扣积分
-    job = DownloadService.create_download_job(x_lc_uid, request.url)
-    
-    if not job:
-        raise HTTPException(status_code=500, detail="创建下载任务失败")
-    
-    # 异步执行下载（不阻塞响应）
-    asyncio.create_task(execute_download(job["job_id"], request.url, platform))
-    
-    return DownloadStartResponse(
-        job_id=job["job_id"],
-        platform=platform,
-        cost_credits=cost,
-        status="running",
-        message="下载任务已创建，积分已冻结。解析成功后请调用confirm接口确认"
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        status_code = 500
+        error_msg = str(e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        latency_ms = int((time.time() - start_time) * 1000)
+        MetricsService.record_api_call(
+            endpoint="/api/downloads/start",
+            method="POST",
+            status_code=status_code,
+            latency_ms=latency_ms,
+            lc_uid=x_lc_uid,
+            error_message=error_msg
+        )
 
 
 @router.get("/status", response_model=DownloadStatusResponse, summary="查询下载状态")
@@ -130,21 +180,48 @@ async def get_download_status(
     - `succeeded`: 下载成功（包含result_data）
     - `failed`: 下载失败（积分已返还，包含error_message）
     """
-    # 验证身份
-    valid, error = await AuthService.verify_session(x_lc_uid, x_lc_session)
-    if not valid:
-        raise HTTPException(status_code=401, detail=f"身份验证失败: {error}")
+    start_time = time.time()
+    status_code = 200
+    error_msg = None
     
-    job = DownloadService.get_job_status(job_id)
-    
-    if not job:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    
-    # 验证任务所属用户
-    if job["lc_uid"] != x_lc_uid:
-        raise HTTPException(status_code=403, detail="无权访问此任务")
-    
-    return DownloadStatusResponse(**job)
+    try:
+        # 验证身份
+        valid, error = await AuthService.verify_session(x_lc_uid, x_lc_session)
+        if not valid:
+            status_code = 401
+            error_msg = f"身份验证失败: {error}"
+            raise HTTPException(status_code=401, detail=error_msg)
+        
+        job = DownloadService.get_job_status(job_id)
+        
+        if not job:
+            status_code = 404
+            error_msg = "任务不存在"
+            raise HTTPException(status_code=404, detail=error_msg)
+        
+        # 验证任务所属用户
+        if job["lc_uid"] != x_lc_uid:
+            status_code = 403
+            error_msg = "无权访问此任务"
+            raise HTTPException(status_code=403, detail=error_msg)
+        
+        return DownloadStatusResponse(**job)
+    except HTTPException:
+        raise
+    except Exception as e:
+        status_code = 500
+        error_msg = str(e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        latency_ms = int((time.time() - start_time) * 1000)
+        MetricsService.record_api_call(
+            endpoint="/api/downloads/status",
+            method="GET",
+            status_code=status_code,
+            latency_ms=latency_ms,
+            lc_uid=x_lc_uid,
+            error_message=error_msg
+        )
 
 
 @router.post("/confirm", response_model=ConfirmResponse, summary="确认下载成功")
@@ -164,17 +241,42 @@ async def confirm_download(
     - 只有状态为 succeeded 的任务才能确认
     - 每个任务只能确认一次
     """
-    # 验证身份
-    valid, error = await AuthService.verify_session(x_lc_uid, x_lc_session)
-    if not valid:
-        raise HTTPException(status_code=401, detail=f"身份验证失败: {error}")
+    start_time = time.time()
+    status_code = 200
+    error_msg = None
     
-    result = DownloadService.confirm_download(request.job_id, x_lc_uid)
-    
-    if not result["success"]:
-        raise HTTPException(status_code=400, detail=result["message"])
-    
-    return ConfirmResponse(**result)
+    try:
+        # 验证身份
+        valid, error = await AuthService.verify_session(x_lc_uid, x_lc_session)
+        if not valid:
+            status_code = 401
+            error_msg = f"身份验证失败: {error}"
+            raise HTTPException(status_code=401, detail=error_msg)
+        
+        result = DownloadService.confirm_download(request.job_id, x_lc_uid)
+        
+        if not result["success"]:
+            status_code = 400
+            error_msg = result["message"]
+            raise HTTPException(status_code=400, detail=error_msg)
+        
+        return ConfirmResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        status_code = 500
+        error_msg = str(e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        latency_ms = int((time.time() - start_time) * 1000)
+        MetricsService.record_api_call(
+            endpoint="/api/downloads/confirm",
+            method="POST",
+            status_code=status_code,
+            latency_ms=latency_ms,
+            lc_uid=x_lc_uid,
+            error_message=error_msg
+        )
 
 
 @router.post("/cancel", response_model=ConfirmResponse, summary="取消下载")
@@ -196,49 +298,41 @@ async def cancel_download(
     - 已确认的任务无法取消
     - 每个任务只能取消一次
     """
-    # 验证身份
-    valid, error = await AuthService.verify_session(x_lc_uid, x_lc_session)
-    if not valid:
-        raise HTTPException(status_code=401, detail=f"身份验证失败: {error}")
+    start_time = time.time()
+    status_code = 200
+    error_msg = None
     
-    result = DownloadService.cancel_download(request.job_id, x_lc_uid)
-    
-    if not result["success"]:
-        raise HTTPException(status_code=400, detail=result["message"])
-    
-    return ConfirmResponse(**result)
-
-
-async def execute_download(job_id: str, url: str, platform: str):
-    """
-    执行实际的下载任务（后台异步）
-    
-    Args:
-        job_id: 任务ID
-        url: 视频链接
-        platform: 平台类型
-    """
     try:
-        if platform == "douyin":
-            # 调用现有的douyin_app接口
-            result = await call_douyin_api(url)
-            
-            # 更新任务状态为成功
-            DownloadService.update_job_status(
-                job_id=job_id,
-                status="succeeded",
-                result_data=result
-            )
-        else:
-            # 其他平台暂不支持
-            raise Exception(f"暂不支持平台: {platform}")
-            
+        # 验证身份
+        valid, error = await AuthService.verify_session(x_lc_uid, x_lc_session)
+        if not valid:
+            status_code = 401
+            error_msg = f"身份验证失败: {error}"
+            raise HTTPException(status_code=401, detail=error_msg)
+        
+        result = DownloadService.cancel_download(request.job_id, x_lc_uid)
+        
+        if not result["success"]:
+            status_code = 400
+            error_msg = result["message"]
+            raise HTTPException(status_code=400, detail=error_msg)
+        
+        return ConfirmResponse(**result)
+    except HTTPException:
+        raise
     except Exception as e:
-        # 下载失败，更新状态并返还积分
-        DownloadService.update_job_status(
-            job_id=job_id,
-            status="failed",
-            error_message=str(e)
+        status_code = 500
+        error_msg = str(e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        latency_ms = int((time.time() - start_time) * 1000)
+        MetricsService.record_api_call(
+            endpoint="/api/downloads/cancel",
+            method="POST",
+            status_code=status_code,
+            latency_ms=latency_ms,
+            lc_uid=x_lc_uid,
+            error_message=error_msg
         )
 
 
@@ -276,11 +370,48 @@ async def call_douyin_api(url: str) -> Dict[str, Any]:
     api_url = f"{base_url.rstrip('/')}/api/v1/douyin/app/v3/fetch_one_video"
     params = {"aweme_id": aweme_id}
     
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(api_url, headers=headers, params=params)
-        
-        if resp.status_code >= 400:
-            raise Exception(f"TikHub API错误: {resp.status_code}, {resp.text}")
-        
-        return resp.json()
+    # 记录外部API调用
+    start_time = time.time()
+    status_code = 200
+    error_msg = None
+    
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(api_url, headers=headers, params=params)
+            status_code = resp.status_code
+            
+            if resp.status_code >= 400:
+                error_msg = f"TikHub API错误: {resp.status_code}, {resp.text}"
+    except Exception as e:
+        status_code = 500
+        error_msg = str(e)
+        # 记录失败调用
+        latency_ms = int((time.time() - start_time) * 1000)
+        MetricsService.record_api_call(
+            endpoint="/api/v1/douyin/app/v3/fetch_one_video",
+            method="GET",
+            status_code=status_code,
+            latency_ms=latency_ms,
+            is_external=True,
+            external_api="TikHub",
+            error_message=error_msg
+        )
+        raise
+    
+    # 记录调用
+    latency_ms = int((time.time() - start_time) * 1000)
+    MetricsService.record_api_call(
+        endpoint="/api/v1/douyin/app/v3/fetch_one_video",
+        method="GET",
+        status_code=status_code,
+        latency_ms=latency_ms,
+        is_external=True,
+        external_api="TikHub",
+        error_message=error_msg
+    )
+    
+    if status_code >= 400:
+        raise Exception(error_msg)
+    
+    return resp.json()
 

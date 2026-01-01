@@ -35,6 +35,8 @@
 
 # FastAPI APP
 import uvicorn
+import asyncio
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.api.router import router as api_router
 
@@ -47,6 +49,50 @@ import os
 
 # YAML
 import yaml
+
+# Metrics cleanup
+from app.services.metrics_service import MetricsService
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+# 后台清理任务
+async def periodic_cleanup():
+    """每天清理一次过期的监控数据"""
+    while True:
+        try:
+            await asyncio.sleep(86400)  # 24小时
+            deleted = MetricsService.cleanup_old_data()
+            logger.info(f"定时清理: 删除了 {deleted} 条过期监控记录")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"定时清理失败: {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    # 启动时清理一次过期数据
+    try:
+        deleted = MetricsService.cleanup_old_data()
+        if deleted > 0:
+            logger.info(f"启动清理: 删除了 {deleted} 条过期监控记录")
+    except Exception as e:
+        logger.error(f"启动清理失败: {e}")
+    
+    # 启动后台清理任务
+    cleanup_task = asyncio.create_task(periodic_cleanup())
+    
+    yield
+    
+    # 关闭时取消后台任务
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
 
 # Load Config
 
@@ -133,6 +179,7 @@ app = FastAPI(
     openapi_tags=tags_metadata,
     docs_url=docs_url,  # 文档路径
     redoc_url=redoc_url,  # redoc文档路径
+    lifespan=lifespan,  # 生命周期管理
 )
 
 # API router

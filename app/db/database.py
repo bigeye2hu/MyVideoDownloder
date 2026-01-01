@@ -114,6 +114,38 @@ def init_database():
         ON download_jobs(status)
         """)
         
+        # 5. API调用监控表
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS api_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            endpoint TEXT NOT NULL,
+            method TEXT NOT NULL,
+            status_code INTEGER NOT NULL,
+            latency_ms INTEGER NOT NULL,
+            is_external INTEGER NOT NULL DEFAULT 0,
+            external_api TEXT,
+            lc_uid TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL
+        )
+        """)
+        
+        # 为API监控表创建索引
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_api_metrics_endpoint 
+        ON api_metrics(endpoint)
+        """)
+        
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_api_metrics_created_at 
+        ON api_metrics(created_at)
+        """)
+        
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_api_metrics_is_external 
+        ON api_metrics(is_external)
+        """)
+        
         conn.commit()
         logger.info(f"数据库初始化成功: {DB_PATH}")
         

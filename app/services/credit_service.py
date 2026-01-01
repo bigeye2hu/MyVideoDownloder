@@ -308,4 +308,101 @@ class CreditService:
         user = get_or_create_user(lc_uid)
         frozen = user.get("credits_frozen", 0) or 0
         return user["credits_balance"] - frozen
+    
+    @staticmethod
+    def check_transaction_exists(transaction_id: str) -> bool:
+        """
+        检查IAP交易是否已存在（防止重复充值）
+        
+        Args:
+            transaction_id: Apple IAP交易ID
+            
+        Returns:
+            是否已存在
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM iap_transactions WHERE transaction_id = ?",
+                (transaction_id,)
+            )
+            return cursor.fetchone() is not None
+    
+    @staticmethod
+    def add_credits_iap(
+        lc_uid: str, 
+        amount: int, 
+        transaction_id: str, 
+        product_id: str, 
+        reason: str = "IAP购买"
+    ) -> dict:
+        """
+        IAP充值添加积分
+        
+        Args:
+            lc_uid: LeanCloud用户ID
+            amount: 积分数量（正数）
+            transaction_id: Apple IAP交易ID
+            product_id: 商品ID
+            reason: 充值原因
+            
+        Returns:
+            dict: {"success": True, "new_balance": int} 或 {"success": False, "error": str}
+        """
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            try:
+                # 检查交易是否已存在
+                cursor.execute(
+                    "SELECT 1 FROM iap_transactions WHERE transaction_id = ?",
+                    (transaction_id,)
+                )
+                if cursor.fetchone():
+                    logger.warning(f"IAP交易已存在，拒绝重复充值: {transaction_id}")
+                    return {"success": False, "error": "交易已处理，请勿重复提交"}
+                
+                now = datetime.utcnow().isoformat()
+                
+                # 记录IAP交易
+                cursor.execute("""
+                INSERT INTO iap_transactions (transaction_id, lc_uid, product_id, credits, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """, (transaction_id, lc_uid, product_id, amount, now))
+                
+                # 增加积分
+                cursor.execute("""
+                UPDATE users 
+                SET credits_balance = credits_balance + ?, updated_at = ?
+                WHERE lc_uid = ?
+                """, (amount, now, lc_uid))
+                
+                # 记录流水（正数）
+                cursor.execute("""
+                INSERT INTO credit_ledger (lc_uid, delta, reason, ref_id, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """, (lc_uid, amount, reason, transaction_id, now))
+                
+                # 获取新余额
+                cursor.execute(
+                    "SELECT credits_balance, credits_frozen FROM users WHERE lc_uid = ?",
+                    (lc_uid,)
+                )
+                row = cursor.fetchone()
+                new_balance = row["credits_balance"]
+                frozen = row["credits_frozen"] or 0
+                
+                conn.commit()
+                
+                logger.info(f"IAP充值成功: {lc_uid}, 金额: {amount}, 交易ID: {transaction_id}, 新余额: {new_balance}")
+                return {
+                    "success": True, 
+                    "new_balance": new_balance,
+                    "frozen": frozen
+                }
+                
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"IAP充值失败: {lc_uid}, 错误: {e}")
+                return {"success": False, "error": str(e)}
 

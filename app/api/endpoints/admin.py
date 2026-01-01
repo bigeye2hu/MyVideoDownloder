@@ -249,6 +249,7 @@ async def get_stats():
 CORE_ENDPOINTS = [
     {"endpoint": "/api/credits/balance", "method": "GET", "description": "查询积分余额", "type": "internal"},
     {"endpoint": "/api/credits/ledger", "method": "GET", "description": "查询积分流水", "type": "internal"},
+    {"endpoint": "/api/credits/add-iap", "method": "POST", "description": "IAP充值积分", "type": "internal"},
     {"endpoint": "/api/downloads/start", "method": "POST", "description": "发起下载任务", "type": "internal"},
     {"endpoint": "/api/downloads/status", "method": "GET", "description": "查询下载状态", "type": "internal"},
     {"endpoint": "/api/downloads/confirm", "method": "POST", "description": "确认下载成功", "type": "internal"},

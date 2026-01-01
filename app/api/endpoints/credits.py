@@ -38,6 +38,21 @@ class LedgerResponse(BaseModel):
     items: list[LedgerItem]
 
 
+class AddIAPRequest(BaseModel):
+    """IAP充值请求"""
+    amount: int
+    transaction_id: str
+    product_id: str
+    reason: str = "IAP购买"
+
+
+class AddIAPResponse(BaseModel):
+    """IAP充值响应"""
+    lc_uid: str
+    credits_balance: int
+    credits_frozen: int = 0
+
+
 @router.get("/balance", response_model=BalanceResponse, summary="查询积分余额")
 async def get_balance(
     x_lc_uid: str = HeaderParam(alias="X-LC-UID"),
@@ -129,6 +144,74 @@ async def get_ledger(
         MetricsService.record_api_call(
             endpoint="/api/credits/ledger",
             method="GET",
+            status_code=status_code,
+            latency_ms=latency_ms,
+            lc_uid=x_lc_uid,
+            error_message=error_msg
+        )
+
+
+@router.post("/add-iap", response_model=AddIAPResponse, summary="IAP充值积分")
+async def add_iap_credits(
+    request: AddIAPRequest,
+    x_lc_uid: str = HeaderParam(alias="X-LC-UID"),
+    x_lc_session: str = HeaderParam(alias="X-LC-Session", default="")
+):
+    """
+    IAP购买后添加积分
+    
+    - **认证**: 通过Header的X-LC-UID和X-LC-Session验证用户身份
+    - **防重复**: 通过transaction_id防止重复充值
+    - **amount**: 充值积分数量
+    - **transaction_id**: Apple IAP交易ID
+    - **product_id**: 商品ID（如com.mygolfswingapp.credits.300）
+    """
+    start_time = time.time()
+    status_code = 200
+    error_msg = None
+    
+    try:
+        # 验证身份
+        valid, error = await AuthService.verify_session(x_lc_uid, x_lc_session)
+        if not valid:
+            status_code = 401
+            error_msg = f"身份验证失败: {error}"
+            raise HTTPException(status_code=401, detail=error_msg)
+        
+        # 确保用户存在
+        get_or_create_user(x_lc_uid)
+        
+        # 执行充值
+        result = CreditService.add_credits_iap(
+            lc_uid=x_lc_uid,
+            amount=request.amount,
+            transaction_id=request.transaction_id,
+            product_id=request.product_id,
+            reason=request.reason
+        )
+        
+        if not result["success"]:
+            status_code = 400
+            error_msg = result["error"]
+            raise HTTPException(status_code=400, detail=error_msg)
+        
+        return AddIAPResponse(
+            lc_uid=x_lc_uid,
+            credits_balance=result["new_balance"],
+            credits_frozen=result["frozen"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        status_code = 500
+        error_msg = str(e)
+        raise HTTPException(status_code=500, detail=f"充值失败: {str(e)}")
+    finally:
+        latency_ms = int((time.time() - start_time) * 1000)
+        MetricsService.record_api_call(
+            endpoint="/api/credits/add-iap",
+            method="POST",
             status_code=status_code,
             latency_ms=latency_ms,
             lc_uid=x_lc_uid,

@@ -185,6 +185,10 @@ app = FastAPI(
 # API router
 app.include_router(api_router, prefix="/api")
 
+# Home router (support, privacy pages)
+from app.api.endpoints import home
+app.include_router(home.router)
+
 # PyWebIO APP
 if config['Web']['PyWebIO_Enable']:
     webapp = asgi_app(lambda: MainView().main_view())

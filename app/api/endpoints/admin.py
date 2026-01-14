@@ -306,6 +306,108 @@ async def cleanup_metrics():
     return {"success": True, "deleted_count": deleted}
 
 
+# ==================== 用户反馈管理 ====================
+
+@router.get("/feedbacks", summary="获取用户反馈列表")
+async def get_feedbacks(
+    limit: int = Query(default=100, le=500),
+    type_filter: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    search: Optional[str] = None
+):
+    """获取用户反馈列表"""
+    import json
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        query = "SELECT * FROM feedbacks WHERE 1=1"
+        params = []
+        
+        if type_filter:
+            query += " AND type = ?"
+            params.append(type_filter)
+        
+        if status_filter:
+            query += " AND status = ?"
+            params.append(status_filter)
+        
+        if search:
+            query += " AND content LIKE ?"
+            params.append(f"%{search}%")
+        
+        query += " ORDER BY received_at DESC LIMIT ?"
+        params.append(limit)
+        
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        
+        feedbacks = []
+        for row in rows:
+            fb = dict(row)
+            # 解析设备信息JSON
+            if fb.get("device_info"):
+                try:
+                    fb["device_info"] = json.loads(fb["device_info"])
+                except:
+                    pass
+            feedbacks.append(fb)
+        
+        return feedbacks
+
+
+@router.get("/feedbacks/{feedback_id}", summary="获取反馈详情")
+async def get_feedback_detail(feedback_id: str):
+    """获取反馈详情"""
+    import json
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM feedbacks WHERE id = ?", (feedback_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="反馈不存在")
+        
+        fb = dict(row)
+        if fb.get("device_info"):
+            try:
+                fb["device_info"] = json.loads(fb["device_info"])
+            except:
+                pass
+        return fb
+
+
+@router.post("/feedbacks/{feedback_id}/status", summary="更新反馈状态")
+async def update_feedback_status(
+    feedback_id: str,
+    status: str = Query(..., description="新状态：pending | processed | archived")
+):
+    """更新反馈状态"""
+    valid_statuses = ["pending", "processed", "archived"]
+    if status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"状态无效，必须是：{', '.join(valid_statuses)}")
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE feedbacks SET status = ? WHERE id = ?", (status, feedback_id))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="反馈不存在")
+        conn.commit()
+    
+    return {"success": True, "message": f"反馈状态已更新为 {status}"}
+
+
+@router.delete("/feedbacks/{feedback_id}", summary="删除反馈")
+async def delete_feedback(feedback_id: str):
+    """删除反馈"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM feedbacks WHERE id = ?", (feedback_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="反馈不存在")
+        conn.commit()
+    
+    return {"success": True, "message": f"反馈 {feedback_id} 已删除"}
+
+
 # ==================== 管理页面 ====================
 
 @router.get("/", response_class=HTMLResponse, summary="管理页面")
@@ -622,6 +724,7 @@ async def admin_page():
                 <div class="sub-tab active" data-subtab="users">👤 用户</div>
                 <div class="sub-tab" data-subtab="downloads">📥 下载任务</div>
                 <div class="sub-tab" data-subtab="ledger">📝 积分流水</div>
+                <div class="sub-tab" data-subtab="feedbacks">💬 用户反馈</div>
             </div>
             
             <!-- 用户面板 -->
@@ -688,6 +791,46 @@ async def admin_page():
                             </tr>
                         </thead>
                         <tbody id="ledgerTable"></tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- 用户反馈面板 -->
+            <div class="sub-panel" id="subtab-feedbacks">
+                <div class="card">
+                    <button class="btn btn-primary refresh-btn" onclick="loadFeedbacks()">🔄 刷新</button>
+                    <h2>💬 用户反馈</h2>
+                    <div class="form-row">
+                        <select id="feedbackTypeFilter" onchange="loadFeedbacks()">
+                            <option value="">全部类型</option>
+                            <option value="功能建议">功能建议</option>
+                            <option value="问题反馈">问题反馈</option>
+                            <option value="其他">其他</option>
+                        </select>
+                        <select id="feedbackStatusFilter" onchange="loadFeedbacks()">
+                            <option value="">全部状态</option>
+                            <option value="pending">待处理</option>
+                            <option value="processed">已处理</option>
+                            <option value="archived">已归档</option>
+                        </select>
+                        <input type="text" id="feedbackFilter" placeholder="搜索反馈内容...">
+                        <button class="btn btn-primary" onclick="loadFeedbacks()">筛选</button>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>反馈ID</th>
+                                <th>类型</th>
+                                <th>内容</th>
+                                <th>联系方式</th>
+                                <th>用户ID</th>
+                                <th>设备信息</th>
+                                <th>状态</th>
+                                <th>提交时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="feedbacksTable"></tbody>
                     </table>
                 </div>
             </div>
@@ -909,6 +1052,11 @@ async def admin_page():
                 parent.querySelectorAll('.sub-panel').forEach(p => p.classList.remove('active'));
                 tab.classList.add('active');
                 document.getElementById('subtab-' + tab.dataset.subtab).classList.add('active');
+                
+                // 切换到反馈标签页时加载数据
+                if (tab.dataset.subtab === 'feedbacks') {
+                    loadFeedbacks();
+                }
             });
         });
         
@@ -999,6 +1147,108 @@ async def admin_page():
                     </tr>
                 `).join('');
             } catch (e) { console.error(e); }
+        }
+        
+        async function loadFeedbacks() {
+            try {
+                const typeFilter = document.getElementById('feedbackTypeFilter').value;
+                const statusFilter = document.getElementById('feedbackStatusFilter').value;
+                const searchFilter = document.getElementById('feedbackFilter').value;
+                
+                let url = API_BASE + '/feedbacks?limit=200';
+                if (typeFilter) url += '&type_filter=' + encodeURIComponent(typeFilter);
+                if (statusFilter) url += '&status_filter=' + encodeURIComponent(statusFilter);
+                if (searchFilter) url += '&search=' + encodeURIComponent(searchFilter);
+                
+                const res = await fetch(url);
+                const items = await res.json();
+                const tbody = document.getElementById('feedbacksTable');
+                
+                if (items.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="9" class="empty-state">暂无反馈记录</td></tr>';
+                    return;
+                }
+                
+                tbody.innerHTML = items.map(fb => {
+                    const deviceInfo = fb.device_info ? (typeof fb.device_info === 'string' ? JSON.parse(fb.device_info) : fb.device_info) : {};
+                    const deviceStr = deviceInfo.app_version || deviceInfo.device_model ? 
+                        `${deviceInfo.app_version || '-'} / ${deviceInfo.ios_version || '-'} / ${deviceInfo.device_model || '-'}` : '-';
+                    const statusClass = fb.status === 'pending' ? 'status-warning' : fb.status === 'processed' ? 'status-success' : 'status-dim';
+                    const statusText = fb.status === 'pending' ? '待处理' : fb.status === 'processed' ? '已处理' : '已归档';
+                    
+                    return `
+                        <tr>
+                            <td class="mono" title="${fb.id}">${fb.id}</td>
+                            <td>${fb.type}</td>
+                            <td class="content-cell" title="${fb.content}">${fb.content.length > 50 ? fb.content.substring(0, 50) + '...' : fb.content}</td>
+                            <td>${fb.contact || '-'}</td>
+                            <td class="mono" title="${fb.lc_uid || '未登录'}">${fb.lc_uid || '<span style="color:#888;">未登录</span>'}</td>
+                            <td class="mono" style="font-size: 0.85em;">${deviceStr}</td>
+                            <td><span class="status ${statusClass}">${statusText}</span></td>
+                            <td>${formatTime(fb.received_at)}</td>
+                            <td>
+                                <button class="btn btn-sm" onclick="viewFeedback('${fb.id}')">查看</button>
+                                ${fb.status === 'pending' ? `<button class="btn btn-sm btn-success" onclick="updateFeedbackStatus('${fb.id}', 'processed')">标记已处理</button>` : ''}
+                                <button class="btn btn-sm btn-danger" onclick="deleteFeedback('${fb.id}')">删除</button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            } catch (e) { 
+                console.error('加载反馈失败:', e);
+                document.getElementById('feedbacksTable').innerHTML = '<tr><td colspan="9" class="empty-state">加载失败: ' + e.message + '</td></tr>';
+            }
+        }
+        
+        async function viewFeedback(feedbackId) {
+            try {
+                const res = await fetch(API_BASE + '/feedbacks/' + feedbackId);
+                const fb = await res.json();
+                const deviceInfo = fb.device_info ? (typeof fb.device_info === 'string' ? JSON.parse(fb.device_info) : fb.device_info) : {};
+                
+                const deviceInfoStr = Object.keys(deviceInfo).length > 0 ? 
+                    `应用版本: ${deviceInfo.app_version || '未知'}\niOS版本: ${deviceInfo.ios_version || '未知'}\n设备型号: ${deviceInfo.device_model || '未知'}` : '无';
+                
+                alert(`反馈详情\n\n反馈ID: ${fb.id}\n类型: ${fb.type}\n状态: ${fb.status === 'pending' ? '待处理' : fb.status === 'processed' ? '已处理' : '已归档'}\n\n反馈内容:\n${fb.content}\n\n联系方式: ${fb.contact || '无'}\n用户ID: ${fb.lc_uid || '未登录（游客）'}\n\n设备信息:\n${deviceInfoStr}\n\n提交时间: ${fb.timestamp || '未知'}\n接收时间: ${fb.received_at || '未知'}`);
+            } catch (e) {
+                alert('查看反馈失败: ' + e.message);
+            }
+        }
+        
+        async function updateFeedbackStatus(feedbackId, status) {
+            if (!confirm('确定要更新反馈状态吗？')) return;
+            try {
+                const res = await fetch(API_BASE + '/feedbacks/' + feedbackId + '/status?status=' + status, {
+                    method: 'POST'
+                });
+                const result = await res.json();
+                if (result.success) {
+                    alert('状态更新成功');
+                    loadFeedbacks();
+                } else {
+                    alert('状态更新失败: ' + result.message);
+                }
+            } catch (e) {
+                alert('更新状态失败: ' + e.message);
+            }
+        }
+        
+        async function deleteFeedback(feedbackId) {
+            if (!confirm('确定要删除这条反馈吗？此操作不可恢复！')) return;
+            try {
+                const res = await fetch(API_BASE + '/feedbacks/' + feedbackId, {
+                    method: 'DELETE'
+                });
+                const result = await res.json();
+                if (result.success) {
+                    alert('删除成功');
+                    loadFeedbacks();
+                } else {
+                    alert('删除失败: ' + result.message);
+                }
+            } catch (e) {
+                alert('删除失败: ' + e.message);
+            }
         }
         
         function editUser(uid, balance) {

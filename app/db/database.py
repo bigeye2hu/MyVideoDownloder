@@ -146,6 +146,38 @@ def init_database():
         ON api_metrics(is_external)
         """)
         
+        # 6. 用户反馈表
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS feedbacks (
+            id TEXT PRIMARY KEY,
+            type TEXT NOT NULL,
+            content TEXT NOT NULL,
+            contact TEXT,
+            device_info TEXT,
+            lc_uid TEXT,
+            timestamp TEXT NOT NULL,
+            received_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            FOREIGN KEY (lc_uid) REFERENCES users(lc_uid)
+        )
+        """)
+        
+        # 为反馈表创建索引
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_feedbacks_lc_uid 
+        ON feedbacks(lc_uid)
+        """)
+        
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_feedbacks_created_at 
+        ON feedbacks(received_at)
+        """)
+        
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_feedbacks_status 
+        ON feedbacks(status)
+        """)
+        
         conn.commit()
         logger.info(f"数据库初始化成功: {DB_PATH}")
         
